@@ -1,0 +1,4 @@
+Flask==2.3.3
+aiohttp==3.8.6
+google-cloud-firestore==2.13.1
+gunicorn==21.2.0
