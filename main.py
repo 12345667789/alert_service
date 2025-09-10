@@ -57,16 +57,16 @@ class ConfigManager:
                 discord_data = discord_doc.to_dict()
                 discord_webhook = discord_data.get(discord_field)
 
-            # Get Telegram config (assuming it's in a separate document)
+            # Get Telegram config from your existing structure
             telegram_token = None
             telegram_chat_id = None
             try:
                 telegram_doc = (
-                    db.collection("app_config").document("telegram_config").get()
+                    db.collection("app_config").document("telegram_token").get()
                 )
                 if telegram_doc.exists:
                     telegram_data = telegram_doc.to_dict()
-                    telegram_token = telegram_data.get("bot_token")
+                    telegram_token = telegram_data.get("API_key")
                     telegram_chat_id = telegram_data.get("chat_id")
             except Exception as e:
                 logger.warning(f"Could not load Telegram config: {e}")
