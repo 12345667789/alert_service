@@ -1,4 +1,6 @@
 Flask==2.3.3
-aiohttp==3.8.6
-google-cloud-firestore==2.13.1
 gunicorn==21.2.0
+google-cloud-firestore==2.11.1
+google-cloud-pubsub==2.18.1
+aiohttp==3.8.5
+requests==2.31.0
