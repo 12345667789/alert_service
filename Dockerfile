@@ -1,5 +1,7 @@
-FROM python:3.11-slim
+# Use Python 3.9 slim image
+FROM python:3.9-slim
 
+# Set working directory
 WORKDIR /app
 
 # Install curl for health checks
