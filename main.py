@@ -1,10 +1,11 @@
-# main.py - Enhanced version with Telegram and environment selection
+# main.py - Enhanced with flexible Pub/Sub integration
 import os
 import json
 import time
+import base64
 import requests
 from flask import Flask, request, jsonify
-from google.cloud import firestore
+from google.cloud import firestore, pubsub_v1
 import logging
 
 # Configure logging
@@ -23,8 +24,167 @@ except Exception as e:
     db = None
 
 
+class AlertProcessor:
+    """Processes and enriches alert data"""
+
+    @staticmethod
+    def parse_minimal_alert(data: dict) -> dict:
+        """Parse minimal alert data and standardize format"""
+        # Handle different possible input formats
+        symbol = data.get("symbol", "").upper()
+        alert_type = data.get("alert_type", "new_breaker").lower().replace(" ", "_")
+        trigger_time = data.get("trigger_time", "")
+        underlying = data.get("underlying", symbol)  # Default to symbol if not provided
+
+        # Handle timestamp - could be in different formats
+        timestamp = data.get("timestamp")
+        if not timestamp:
+            timestamp = time.time()
+        elif isinstance(timestamp, str):
+            # If it's a string timestamp, try to convert or use current time
+            try:
+                timestamp = float(timestamp)
+            except:
+                timestamp = time.time()
+
+        # Create standardized alert structure
+        processed_alert = {
+            "symbol": symbol,
+            "alert_type": alert_type,
+            "trigger_time": trigger_time,
+            "underlying": underlying,
+            "timestamp": timestamp,
+            "source": data.get("source", "monitor_program"),
+            # Future enrichment fields (empty for now)
+            "stock_price": data.get("stock_price"),
+            "volume": data.get("volume"),
+            "market_cap": data.get("market_cap"),
+            "sector": data.get("sector"),
+        }
+
+        logger.info(f"Processed alert: {symbol} - {alert_type} at {trigger_time}")
+        return processed_alert
+
+    @staticmethod
+    def enrich_alert_data(alert: dict) -> dict:
+        """Future function to enrich alert with additional data"""
+        # This is where you could add:
+        # - Stock price lookup
+        # - Company information
+        # - Market data
+        # - Technical indicators
+        # For now, just return as-is
+        return alert
+
+
+class NotificationSender:
+    """Handles sending notifications to different channels"""
+
+    def __init__(self, config_manager):
+        self.config = config_manager
+
+    def format_discord_message(self, alert: dict) -> dict:
+        """Format alert for Discord"""
+        # Map alert types to colors and emojis
+        type_config = {
+            "new_breaker": {"emoji": "🟢", "color": 0x00FF00, "title": "New Breaker"},
+            "ended_breaker": {
+                "emoji": "🔴",
+                "color": 0xFF0000,
+                "title": "Breaker Ended",
+            },
+            "re_breaker": {"emoji": "🟠", "color": 0xFFA500, "title": "Re-Breaker"},
+        }
+
+        config = type_config.get(alert["alert_type"], type_config["new_breaker"])
+
+        # Build description
+        description_parts = [f"**Underlying:** {alert['underlying']}"]
+        if alert["trigger_time"]:
+            description_parts.append(f"**Trigger Time:** {alert['trigger_time']} ET")
+        if alert.get("stock_price"):
+            description_parts.append(f"**Price:** ${alert['stock_price']:.2f}")
+
+        return {
+            "embeds": [
+                {
+                    "title": f"{config['emoji']} {config['title']}: {alert['symbol']}",
+                    "description": "\n".join(description_parts),
+                    "color": config["color"],
+                    "footer": {
+                        "text": f"Secret Alerts | {alert.get('source', 'Monitor')}"
+                    },
+                }
+            ]
+        }
+
+    def format_telegram_message(self, alert: dict) -> str:
+        """Format alert for Telegram"""
+        emoji_map = {"new_breaker": "🟢", "ended_breaker": "🔴", "re_breaker": "🟠"}
+
+        emoji = emoji_map.get(alert["alert_type"], "🟢")
+        title = alert["alert_type"].replace("_", " ").title()
+
+        message_parts = [
+            f"{emoji} *{title}: {alert['symbol']}*",
+            f"**Underlying:** {alert['underlying']}",
+        ]
+
+        if alert["trigger_time"]:
+            message_parts.append(f"**Trigger Time:** {alert['trigger_time']} ET")
+        if alert.get("stock_price"):
+            message_parts.append(f"**Price:** ${alert['stock_price']:.2f}")
+
+        message_parts.append(f"\n_Secret Alerts | {alert.get('source', 'Monitor')}_")
+        return "\n".join(message_parts)
+
+    def send_notifications(self, alert: dict) -> dict:
+        """Send alert to all configured channels"""
+        results = {}
+        config = self.config.get_webhook_config()
+
+        # Send Discord
+        discord_webhook = config.get("discord")
+        if discord_webhook:
+            try:
+                payload = self.format_discord_message(alert)
+                response = requests.post(discord_webhook, json=payload, timeout=10)
+                results["discord"] = (
+                    "success"
+                    if response.status_code == 204
+                    else f"failed_{response.status_code}"
+                )
+            except Exception as e:
+                logger.error(f"Discord send failed: {e}")
+                results["discord"] = "error"
+
+        # Send Telegram
+        telegram_token = config.get("telegram_token")
+        telegram_chat_id = config.get("telegram_chat_id")
+        if telegram_token and telegram_chat_id:
+            try:
+                message = self.format_telegram_message(alert)
+                url = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
+                payload = {
+                    "chat_id": telegram_chat_id,
+                    "text": message,
+                    "parse_mode": "Markdown",
+                }
+                response = requests.post(url, json=payload, timeout=10)
+                results["telegram"] = (
+                    "success"
+                    if response.status_code == 200
+                    else f"failed_{response.status_code}"
+                )
+            except Exception as e:
+                logger.error(f"Telegram send failed: {e}")
+                results["telegram"] = "error"
+
+        return results
+
+
 class ConfigManager:
-    """Enhanced config manager with Telegram support"""
+    """Enhanced config manager"""
 
     def __init__(self):
         self._webhook_cache = {}
@@ -42,10 +202,7 @@ class ConfigManager:
             if not db:
                 return {}
 
-            # Get environment from Cloud Run env var or default to production
             env = os.environ.get("ENVIRONMENT", "production")
-
-            # Select the right Discord webhook field
             discord_field = (
                 "short_sale_alerts" if env == "production" else "short_sale_alerts_dev"
             )
@@ -57,7 +214,7 @@ class ConfigManager:
                 discord_data = discord_doc.to_dict()
                 discord_webhook = discord_data.get(discord_field)
 
-            # Get Telegram config from your existing structure
+            # Get Telegram config
             telegram_token = None
             telegram_chat_id = None
             try:
@@ -86,29 +243,32 @@ class ConfigManager:
         return self._webhook_cache
 
 
-# Global config manager
+# Initialize global components
 config_manager = ConfigManager()
+alert_processor = AlertProcessor()
+notification_sender = NotificationSender(config_manager)
 
 
-def send_telegram_message(token: str, chat_id: str, message: str) -> bool:
-    """Send message to Telegram"""
+def publish_test_message(topic_name: str, alert_data: dict):
+    """Publish a test message to Pub/Sub topic"""
     try:
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+        publisher = pubsub_v1.PublisherClient()
+        project_id = "trading-analytics-2025"
+        topic_path = publisher.topic_path(project_id, topic_name)
 
-        response = requests.post(url, json=payload, timeout=10)
-        if response.status_code == 200:
-            logger.info("Telegram message sent successfully")
-            return True
-        else:
-            logger.error(f"Telegram failed: {response.status_code}")
-            return False
+        message_data = json.dumps(alert_data).encode("utf-8")
+        future = publisher.publish(topic_path, message_data)
+        message_id = future.result()
+
+        logger.info(f"Published message {message_id} to {topic_path}")
+        return message_id
 
     except Exception as e:
-        logger.error(f"Telegram send failed: {e}")
-        return False
+        logger.error(f"Failed to publish message: {e}")
+        return None
 
 
+# Routes
 @app.route("/health", methods=["GET"])
 def health_check():
     """Health check endpoint"""
@@ -136,6 +296,8 @@ def root():
                 "test_telegram": "/test_telegram (POST)",
                 "test_both": "/test_both (POST)",
                 "webhook": "/webhook (POST)",
+                "pubsub": "/pubsub (POST)",
+                "test_pubsub": "/test_pubsub (POST)",
             },
         }
     )
@@ -223,9 +385,11 @@ def test_telegram():
 
         message = f"🟢 *Test Alert: {symbol}*\n\n**Underlying:** {underlying}\n**Environment:** {config.get('environment', 'unknown')}\n\n_Secret Alerts - Telegram Test_"
 
-        success = send_telegram_message(token, chat_id, message)
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+        response = requests.post(url, json=payload, timeout=10)
 
-        if success:
+        if response.status_code == 200:
             return (
                 jsonify(
                     {"status": "success", "message": f"Telegram test sent for {symbol}"}
@@ -270,26 +434,27 @@ def test_both():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    """Basic webhook endpoint for receiving alerts"""
+    """Webhook endpoint for receiving alerts from monitoring program"""
     try:
         data = request.get_json()
         if not data:
             return jsonify({"status": "error", "message": "No JSON data provided"}), 400
 
-        symbol = data.get("symbol", "UNKNOWN")
-        alert_type = data.get("alert_type", "unknown")
+        # Process the minimal alert data
+        processed_alert = alert_processor.parse_minimal_alert(data)
 
-        logger.info(f"Received webhook for {symbol} - Type: {alert_type}")
+        # Enrich with additional data (future enhancement)
+        enriched_alert = alert_processor.enrich_alert_data(processed_alert)
 
-        # Here you would process the alert and send to Discord/Telegram
-        # For now, just acknowledge receipt
+        # Send notifications
+        results = notification_sender.send_notifications(enriched_alert)
 
         return (
             jsonify(
                 {
                     "status": "success",
-                    "message": f"Alert received for {symbol}",
-                    "alert_type": alert_type,
+                    "message": f"Alert processed for {processed_alert['symbol']}",
+                    "results": results,
                 }
             ),
             200,
@@ -297,6 +462,93 @@ def webhook():
 
     except Exception as e:
         logger.error(f"Webhook failed: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/pubsub", methods=["POST"])
+def pubsub_handler():
+    """Handle Pub/Sub messages from monitoring program"""
+    try:
+        envelope = request.get_json()
+        if not envelope:
+            return jsonify({"status": "error", "message": "No Pub/Sub message"}), 400
+
+        pubsub_message = envelope.get("message")
+        if not pubsub_message:
+            return (
+                jsonify({"status": "error", "message": "No message in envelope"}),
+                400,
+            )
+
+        # Decode the message data
+        message_data = pubsub_message.get("data")
+        if message_data:
+            decoded_data = base64.b64decode(message_data).decode("utf-8")
+            alert_data = json.loads(decoded_data)
+
+            logger.info(f"Received Pub/Sub message: {alert_data}")
+
+            # Process the alert data
+            processed_alert = alert_processor.parse_minimal_alert(alert_data)
+            enriched_alert = alert_processor.enrich_alert_data(processed_alert)
+
+            # Send notifications
+            results = notification_sender.send_notifications(enriched_alert)
+
+            return (
+                jsonify(
+                    {
+                        "status": "success",
+                        "message": f"Pub/Sub alert processed for {processed_alert['symbol']}",
+                        "results": results,
+                    }
+                ),
+                200,
+            )
+        else:
+            return jsonify({"status": "error", "message": "No data in message"}), 400
+
+    except Exception as e:
+        logger.error(f"Pub/Sub handler error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/test_pubsub", methods=["POST"])
+def test_pubsub():
+    """Test Pub/Sub publishing with minimal data structure"""
+    try:
+        data = request.get_json() or {}
+
+        # Create minimal alert data matching your current format
+        alert_data = {
+            "symbol": data.get("symbol", "TEST"),
+            "alert_type": data.get("alert_type", "new_breaker"),
+            "trigger_time": data.get("trigger_time", "10:00:00"),
+            "underlying": data.get("underlying", data.get("symbol", "TEST")),
+            "timestamp": time.time(),
+            "source": "test_pubsub",
+        }
+
+        topic_name = data.get("topic", "circuit-breaker-alerts")
+        message_id = publish_test_message(topic_name, alert_data)
+
+        if message_id:
+            return (
+                jsonify(
+                    {
+                        "status": "success",
+                        "message": f"Published test alert to topic {topic_name}",
+                        "message_id": message_id,
+                        "alert_data": alert_data,
+                    }
+                ),
+                200,
+            )
+        else:
+            return jsonify({"status": "error", "message": "Failed to publish"}), 500
+
+    except Exception as e:
+        logger.error(f"Test Pub/Sub failed: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
