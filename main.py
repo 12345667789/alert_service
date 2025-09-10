@@ -321,3 +321,4 @@ if __name__ == "__main__":
     app.run(host="0.0.0.0", port=port, debug=True)
 # Deployment test - Tue Sep  9 22:55:01 CDT 2025
 # Auto-deploy test - Tue Sep  9 23:08:38 CDT 2025
+# Fixed logging configuration - Tue Sep  9 23:19:32 CDT 2025
