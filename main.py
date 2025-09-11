@@ -212,13 +212,15 @@ class NotificationSender:
                 logger.error(f"Discord send failed: {e}")
                 results["discord"] = "error"
 
+        # Temporarily disable Telegram to debug worker timeouts
         # Add delay before Telegram to avoid rate limiting
-        if discord_webhook:
-            time.sleep(0.5)  # 0.5 second delay between services
+        # if discord_webhook:
+        #     time.sleep(0.5)  # 0.5 second delay between services
 
         # Send Telegram with retry logic
-        telegram_message = self.format_telegram_message(alert)
-        results["telegram"] = self.send_telegram_with_retry(telegram_message)
+        # telegram_message = self.format_telegram_message(alert)
+        # results["telegram"] = self.send_telegram_with_retry(telegram_message)
+        results["telegram"] = "disabled_for_debugging"
 
         # Log final results
         logger.info(f"Notification results: {results}")
