@@ -1,4 +1,4 @@
-# main.py - Enhanced with flexible Pub/Sub integration
+# main.py - Enhanced with flexible Pub/Sub integration and improved Telegram reliability
 import os
 import json
 import time
@@ -78,22 +78,74 @@ class AlertProcessor:
 
 
 class NotificationSender:
-    """Handles sending notifications to different channels"""
+    """Handles sending notifications to different channels with improved reliability"""
 
     def __init__(self, config_manager):
         self.config = config_manager
+
+    def send_telegram_with_retry(self, message: str, max_retries: int = 2, delay: float = 1.0) -> str:
+        """Send Telegram message with retry logic"""
+        config = self.config.get_webhook_config()
+        token = config.get("telegram_token")
+        chat_id = config.get("telegram_chat_id")
+        
+        if not token or not chat_id:
+            logger.warning("Telegram not configured - skipping")
+            return "not_configured"
+        
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "Markdown",
+        }
+        
+        for attempt in range(max_retries + 1):
+            try:
+                logger.info(f"Sending Telegram message (attempt {attempt + 1})")
+                response = requests.post(url, json=payload, timeout=10)
+                
+                if response.status_code == 200:
+                    logger.info("Telegram message sent successfully")
+                    return "success"
+                elif response.status_code == 429:
+                    # Rate limited - extract retry-after if available
+                    retry_after = response.json().get("parameters", {}).get("retry_after", delay * 2)
+                    logger.warning(f"Telegram rate limited. Retry after {retry_after} seconds")
+                    if attempt < max_retries:
+                        time.sleep(retry_after)
+                        continue
+                else:
+                    logger.error(f"Telegram failed with status {response.status_code}: {response.text}")
+                    if attempt < max_retries:
+                        time.sleep(delay * (attempt + 1))  # Exponential backoff
+                        continue
+                        
+            except requests.exceptions.Timeout:
+                logger.error(f"Telegram timeout on attempt {attempt + 1}")
+                if attempt < max_retries:
+                    time.sleep(delay * (attempt + 1))
+                    continue
+            except Exception as e:
+                logger.error(f"Telegram error on attempt {attempt + 1}: {e}")
+                if attempt < max_retries:
+                    time.sleep(delay * (attempt + 1))
+                    continue
+        
+        logger.error("Telegram failed after all retry attempts")
+        return "failed_after_retries"
 
     def format_discord_message(self, alert: dict) -> dict:
         """Format alert for Discord"""
         # Map alert types to colors and emojis
         type_config = {
-            "new_breaker": {"emoji": "ðŸŸ¢", "color": 0x00FF00, "title": "New Breaker"},
+            "new_breaker": {"emoji": "🟢", "color": 0x00FF00, "title": "New Breaker"},
             "ended_breaker": {
-                "emoji": "ðŸ”´",
+                "emoji": "🔴",
                 "color": 0xFF0000,
                 "title": "Breaker Ended",
             },
-            "re_breaker": {"emoji": "ðŸŸ ", "color": 0xFFA500, "title": "Re-Breaker"},
+            "re_breaker": {"emoji": "🟡", "color": 0xFFA500, "title": "Re-Breaker"},
         }
 
         config = type_config.get(alert["alert_type"], type_config["new_breaker"])
@@ -112,7 +164,7 @@ class NotificationSender:
                     "description": "\n".join(description_parts),
                     "color": config["color"],
                     "footer": {
-                        "text": f"Secret Alerts | {alert.get('source', 'Monitor')}"
+                        "text": f"Secret Alerts | {alert.get('source', 'Monitor')} | Pub/Sub System"
                     },
                 }
             ]
@@ -120,9 +172,9 @@ class NotificationSender:
 
     def format_telegram_message(self, alert: dict) -> str:
         """Format alert for Telegram"""
-        emoji_map = {"new_breaker": "ðŸŸ¢", "ended_breaker": "ðŸ”´", "re_breaker": "ðŸŸ "}
+        emoji_map = {"new_breaker": "🟢", "ended_breaker": "🔴", "re_breaker": "🟡"}
 
-        emoji = emoji_map.get(alert["alert_type"], "ðŸŸ¢")
+        emoji = emoji_map.get(alert["alert_type"], "🟢")
         title = alert["alert_type"].replace("_", " ").title()
 
         message_parts = [
@@ -135,51 +187,41 @@ class NotificationSender:
         if alert.get("stock_price"):
             message_parts.append(f"**Price:** ${alert['stock_price']:.2f}")
 
-        message_parts.append(f"\n_Secret Alerts | {alert.get('source', 'Monitor')}_")
+        message_parts.append(f"\n_Secret Alerts | {alert.get('source', 'Monitor')} | Pub/Sub System_")
         return "\n".join(message_parts)
 
     def send_notifications(self, alert: dict) -> dict:
-        """Send alert to all configured channels"""
+        """Send alert to all configured channels with improved error handling"""
         results = {}
         config = self.config.get_webhook_config()
 
-        # Send Discord
+        # Send Discord first (usually more reliable)
         discord_webhook = config.get("discord")
         if discord_webhook:
             try:
                 payload = self.format_discord_message(alert)
+                logger.info("Sending Discord notification")
                 response = requests.post(discord_webhook, json=payload, timeout=10)
                 results["discord"] = (
                     "success"
                     if response.status_code == 204
                     else f"failed_{response.status_code}"
                 )
+                logger.info(f"Discord result: {results['discord']}")
             except Exception as e:
                 logger.error(f"Discord send failed: {e}")
                 results["discord"] = "error"
 
-        # Send Telegram
-        telegram_token = config.get("telegram_token")
-        telegram_chat_id = config.get("telegram_chat_id")
-        if telegram_token and telegram_chat_id:
-            try:
-                message = self.format_telegram_message(alert)
-                url = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
-                payload = {
-                    "chat_id": telegram_chat_id,
-                    "text": message,
-                    "parse_mode": "Markdown",
-                }
-                response = requests.post(url, json=payload, timeout=10)
-                results["telegram"] = (
-                    "success"
-                    if response.status_code == 200
-                    else f"failed_{response.status_code}"
-                )
-            except Exception as e:
-                logger.error(f"Telegram send failed: {e}")
-                results["telegram"] = "error"
+        # Add delay before Telegram to avoid rate limiting
+        if discord_webhook:
+            time.sleep(0.5)  # 0.5 second delay between services
 
+        # Send Telegram with retry logic
+        telegram_message = self.format_telegram_message(alert)
+        results["telegram"] = self.send_telegram_with_retry(telegram_message)
+
+        # Log final results
+        logger.info(f"Notification results: {results}")
         return results
 
 
@@ -328,7 +370,7 @@ def test_discord_sync():
         discord_payload = {
             "embeds": [
                 {
-                    "title": f"ðŸŸ¢ Test Alert: {symbol}",
+                    "title": f"🟢 Test Alert: {symbol}",
                     "description": f"**Underlying:** {underlying}\n**Environment:** {config.get('environment', 'unknown')}",
                     "color": 0x00FF00,
                     "footer": {"text": "Secret Alerts - Discord Test"},
@@ -383,7 +425,7 @@ def test_telegram():
         symbol = data.get("symbol", "TEST")
         underlying = data.get("underlying", "Test Company")
 
-        message = f"ðŸŸ¢ *Test Alert: {symbol}*\n\n**Underlying:** {underlying}\n**Environment:** {config.get('environment', 'unknown')}\n\n_Secret Alerts - Telegram Test_"
+        message = f"🟢 *Test Alert: {symbol}*\n\n**Underlying:** {underlying}\n**Environment:** {config.get('environment', 'unknown')}\n\n_Secret Alerts - Telegram Test_"
 
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
