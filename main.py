@@ -87,13 +87,13 @@ class NotificationSender:
         """Format alert for Discord"""
         # Map alert types to colors and emojis
         type_config = {
-            "new_breaker": {"emoji": "🟢", "color": 0x00FF00, "title": "New Breaker"},
+            "new_breaker": {"emoji": "ðŸŸ¢", "color": 0x00FF00, "title": "New Breaker"},
             "ended_breaker": {
-                "emoji": "🔴",
+                "emoji": "ðŸ”´",
                 "color": 0xFF0000,
                 "title": "Breaker Ended",
             },
-            "re_breaker": {"emoji": "🟠", "color": 0xFFA500, "title": "Re-Breaker"},
+            "re_breaker": {"emoji": "ðŸŸ ", "color": 0xFFA500, "title": "Re-Breaker"},
         }
 
         config = type_config.get(alert["alert_type"], type_config["new_breaker"])
@@ -120,9 +120,9 @@ class NotificationSender:
 
     def format_telegram_message(self, alert: dict) -> str:
         """Format alert for Telegram"""
-        emoji_map = {"new_breaker": "🟢", "ended_breaker": "🔴", "re_breaker": "🟠"}
+        emoji_map = {"new_breaker": "ðŸŸ¢", "ended_breaker": "ðŸ”´", "re_breaker": "ðŸŸ "}
 
-        emoji = emoji_map.get(alert["alert_type"], "🟢")
+        emoji = emoji_map.get(alert["alert_type"], "ðŸŸ¢")
         title = alert["alert_type"].replace("_", " ").title()
 
         message_parts = [
@@ -328,7 +328,7 @@ def test_discord_sync():
         discord_payload = {
             "embeds": [
                 {
-                    "title": f"🟢 Test Alert: {symbol}",
+                    "title": f"ðŸŸ¢ Test Alert: {symbol}",
                     "description": f"**Underlying:** {underlying}\n**Environment:** {config.get('environment', 'unknown')}",
                     "color": 0x00FF00,
                     "footer": {"text": "Secret Alerts - Discord Test"},
@@ -383,7 +383,7 @@ def test_telegram():
         symbol = data.get("symbol", "TEST")
         underlying = data.get("underlying", "Test Company")
 
-        message = f"🟢 *Test Alert: {symbol}*\n\n**Underlying:** {underlying}\n**Environment:** {config.get('environment', 'unknown')}\n\n_Secret Alerts - Telegram Test_"
+        message = f"ðŸŸ¢ *Test Alert: {symbol}*\n\n**Underlying:** {underlying}\n**Environment:** {config.get('environment', 'unknown')}\n\n_Secret Alerts - Telegram Test_"
 
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
