@@ -164,7 +164,7 @@ class NotificationSender:
                     "description": "\n".join(description_parts),
                     "color": config["color"],
                     "footer": {
-                        "text": f"Secret Alerts | {alert.get('source', 'Monitor')} | Pub/Sub System"
+                        "text": f"Secret Alerts | {alert.get('source', 'Monitor')} | Dispatcher Service"
                     },
                 }
             ]
@@ -212,15 +212,13 @@ class NotificationSender:
                 logger.error(f"Discord send failed: {e}")
                 results["discord"] = "error"
 
-        # Temporarily disable Telegram to debug worker timeouts
-        # Add delay before Telegram to avoid rate limiting
-        # if discord_webhook:
-        #     time.sleep(0.5)  # 0.5 second delay between services
+        # Add a short delay before sending to Telegram to avoid potential rate limiting
+        if discord_webhook:
+            time.sleep(0.5)
 
         # Send Telegram with retry logic
-        # telegram_message = self.format_telegram_message(alert)
-        # results["telegram"] = self.send_telegram_with_retry(telegram_message)
-        results["telegram"] = "disabled_for_debugging"
+        telegram_message = self.format_telegram_message(alert)
+        results["telegram"] = self.send_telegram_with_retry(telegram_message)
 
         # Log final results
         logger.info(f"Notification results: {results}")
@@ -460,14 +458,14 @@ def test_both():
             discord_response = test_discord_sync()
             results["discord"] = "success" if discord_response[1] == 200 else "failed"
         except:
-            results["discord"] = "failed"
+            results["discord"].append("failed")
 
         # Test Telegram
         try:
             telegram_response = test_telegram()
             results["telegram"] = "success" if telegram_response[1] == 200 else "failed"
         except:
-            results["telegram"] = "failed"
+            results["telegram"].append("failed")
 
         return jsonify({"status": "success", "results": results}), 200
 
