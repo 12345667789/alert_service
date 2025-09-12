@@ -30,25 +30,19 @@ class AlertProcessor:
     @staticmethod
     def parse_minimal_alert(data: dict) -> dict:
         """Parse minimal alert data and standardize format"""
-        # Handle different possible input formats
         symbol = data.get("symbol", "").upper()
         alert_type = data.get("alert_type", "new_breaker").lower().replace(" ", "_")
         trigger_time = data.get("trigger_time", "")
-        end_time = data.get("end_time", "") # Handle end_time as well
-        underlying = data.get("underlying", symbol)  # Default to symbol if not provided
+        end_time = data.get("end_time", "")
+        underlying = data.get("underlying", symbol)
+        timestamp = data.get("timestamp", time.time())
 
-        # Handle timestamp - could be in different formats
-        timestamp = data.get("timestamp")
-        if not timestamp:
-            timestamp = time.time()
-        elif isinstance(timestamp, str):
-            # If it's a string timestamp, try to convert or use current time
+        if isinstance(timestamp, str):
             try:
                 timestamp = float(timestamp)
-            except:
+            except ValueError:
                 timestamp = time.time()
 
-        # Create standardized alert structure
         processed_alert = {
             "symbol": symbol,
             "alert_type": alert_type,
@@ -57,13 +51,11 @@ class AlertProcessor:
             "underlying": underlying,
             "timestamp": timestamp,
             "source": data.get("source", "monitor_program"),
-            # Future enrichment fields (empty for now)
             "stock_price": data.get("stock_price"),
             "volume": data.get("volume"),
             "market_cap": data.get("market_cap"),
             "sector": data.get("sector"),
         }
-
         logger.info(f"Processed alert: {symbol} - {alert_type}")
         return processed_alert
 
@@ -74,22 +66,17 @@ class AlertProcessor:
 
 
 class NotificationSender:
-    """Handles sending notifications to different channels with improved reliability"""
+    """Handles sending notifications to different channels"""
 
     def __init__(self, config_manager):
         self.config = config_manager
         
     def _escape_markdown(self, text: str) -> str:
-        """Escape characters that are special in Telegram's MarkdownV2."""
+        """Escape characters for Telegram's MarkdownV2."""
         if not isinstance(text, str):
             text = str(text)
-        
-        # Characters to escape for MarkdownV2
         escape_chars = r'_*[]()~`>#+-=|{}.!'
-        
-        # For each char in escape_chars, map it to '\\' + char
         translator = str.maketrans({char: f'\\{char}' for char in escape_chars})
-        
         return text.translate(translator)
 
     def send_telegram_with_retry(self, message: str, max_retries: int = 2, delay: float = 1.0) -> str:
@@ -103,11 +90,7 @@ class NotificationSender:
             return "not_configured"
         
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "MarkdownV2",
-        }
+        payload = {"chat_id": chat_id, "text": message, "parse_mode": "MarkdownV2"}
         
         for attempt in range(max_retries + 1):
             try:
@@ -122,23 +105,15 @@ class NotificationSender:
                     logger.warning(f"Telegram rate limited. Retry after {retry_after} seconds")
                     if attempt < max_retries:
                         time.sleep(retry_after)
-                        continue
                 else:
                     logger.error(f"Telegram failed with status {response.status_code}: {response.text}")
                     if attempt < max_retries:
                         time.sleep(delay * (attempt + 1))
-                        continue
                         
-            except requests.exceptions.Timeout:
-                logger.error(f"Telegram timeout on attempt {attempt + 1}")
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Telegram network error on attempt {attempt + 1}: {e}")
                 if attempt < max_retries:
                     time.sleep(delay * (attempt + 1))
-                    continue
-            except Exception as e:
-                logger.error(f"Telegram error on attempt {attempt + 1}: {e}")
-                if attempt < max_retries:
-                    time.sleep(delay * (attempt + 1))
-                    continue
         
         logger.error("Telegram failed after all retry attempts")
         return "failed_after_retries"
@@ -150,7 +125,6 @@ class NotificationSender:
             "ended_breaker": {"emoji": "🔴", "color": 0xFF0000, "title": "Breaker Ended"},
             "re_breaker": {"emoji": "🟡", "color": 0xFFA500, "title": "Re-Breaker"},
         }
-
         config = type_config.get(alert["alert_type"], type_config["new_breaker"])
 
         description_parts = [f"**Underlying:** {alert['underlying']}"]
@@ -158,20 +132,14 @@ class NotificationSender:
             description_parts.append(f"**Trigger Time:** {alert['trigger_time']} ET")
         if alert.get("end_time"):
             description_parts.append(f"**End Time:** {alert.get('end_time')} ET")
-        if alert.get("stock_price"):
-            description_parts.append(f"**Price:** ${alert['stock_price']:.2f}")
-
+        
         return {
-            "embeds": [
-                {
-                    "title": f"{config['emoji']} {config['title']}: {alert['symbol']}",
-                    "description": "\n".join(description_parts),
-                    "color": config["color"],
-                    "footer": {
-                        "text": f"Secret Alerts | {alert.get('source', 'Monitor')} | Dispatcher Service"
-                    },
-                }
-            ]
+            "embeds": [{
+                "title": f"{config['emoji']} {config['title']}: {alert['symbol']}",
+                "description": "\n".join(description_parts),
+                "color": config["color"],
+                "footer": {"text": f"Secret Alerts | {alert.get('source', 'Monitor')} | Dispatcher Service"},
+            }]
         }
 
     def format_telegram_message(self, alert: dict) -> str:
@@ -179,18 +147,13 @@ class NotificationSender:
         emoji_map = {"new_breaker": "🟢", "ended_breaker": "🔴", "re_breaker": "🟡"}
         emoji = emoji_map.get(alert["alert_type"], "🟢")
         
-        # Escape all dynamic parts of the message
         title = self._escape_markdown(alert["alert_type"].replace("_", " ").title())
         symbol = self._escape_markdown(alert['symbol'])
         underlying = self._escape_markdown(alert['underlying'])
         source = self._escape_markdown(alert.get('source', 'Monitor'))
         
         header = f"{emoji} *{title}: {symbol}*"
-        
-        message_parts = [
-            header,
-            f"*Underlying:* {underlying}",
-        ]
+        message_parts = [header, f"*Underlying:* {underlying}"]
 
         if alert["trigger_time"]:
             trigger_time = self._escape_markdown(alert['trigger_time'])
@@ -198,9 +161,6 @@ class NotificationSender:
         if alert.get("end_time"):
             end_time = self._escape_markdown(alert.get('end_time'))
             message_parts.append(f"*End Time:* {end_time} ET")
-        if alert.get("stock_price"):
-            stock_price = self._escape_markdown(f"${alert['stock_price']:.2f}")
-            message_parts.append(f"*Price:* {stock_price}")
 
         footer = f"\n_Secret Alerts | {source} | Dispatcher Service_"
         message_parts.append(footer)
@@ -208,7 +168,7 @@ class NotificationSender:
         return "\n".join(message_parts)
 
     def send_notifications(self, alert: dict) -> dict:
-        """Send alert to all configured channels with improved error handling"""
+        """Send alert to all configured channels"""
         results = {}
         config = self.config.get_webhook_config()
 
@@ -224,25 +184,23 @@ class NotificationSender:
                 logger.error(f"Discord send failed: {e}")
                 results["discord"] = "error"
 
-        if discord_webhook:
-            time.sleep(0.5)
-
-        telegram_message = self.format_telegram_message(alert)
-        results["telegram"] = self.send_telegram_with_retry(telegram_message)
-
+        # --- TELEGRAM LOGIC TEMPORARILY DISABLED ---
+        results["telegram"] = "temporarily_disabled"
+        # --- END OF DISABLED SECTION ---
+        
         logger.info(f"Notification results: {results}")
         return results
 
 
 class ConfigManager:
-    """Enhanced config manager"""
+    """Manages loading of configuration from Firestore"""
     def __init__(self):
         self._webhook_cache = {}
         self._cache_ttl = 300
         self._last_fetch = 0
 
     def get_webhook_config(self) -> dict:
-        """Get webhook URLs from Firestore with caching"""
+        """Get webhook URLs and Telegram config from Firestore with caching"""
         current_time = time.time()
         if current_time - self._last_fetch < self._cache_ttl and self._webhook_cache:
             return self._webhook_cache
@@ -251,8 +209,10 @@ class ConfigManager:
             if not db: return {}
             env = os.environ.get("ENVIRONMENT", "production")
             discord_field = ("short_sale_alerts" if env == "production" else "short_sale_alerts_dev")
+            
             discord_doc = db.collection("app_config").document("discord_webhooks").get()
             discord_webhook = discord_doc.to_dict().get(discord_field) if discord_doc.exists else None
+            
             telegram_doc = db.collection("app_config").document("telegram_token").get()
             telegram_token = telegram_doc.to_dict().get("API_key") if telegram_doc.exists else None
             telegram_chat_id = telegram_doc.to_dict().get("chat_id") if telegram_doc.exists else None
@@ -266,7 +226,7 @@ class ConfigManager:
             self._last_fetch = current_time
             logger.info(f"Loaded webhook config for environment: {env}")
         except Exception as e:
-            logger.error(f"Failed to load webhook config: {e}")
+            logger.error(f"Failed to load webhook config from Firestore: {e}")
         return self._webhook_cache
 
 
@@ -277,7 +237,7 @@ notification_sender = NotificationSender(config_manager)
 
 
 def publish_test_message(topic_name: str, alert_data: dict):
-    """Publish a test message to Pub/Sub topic"""
+    """Publish a test message to a Pub/Sub topic"""
     try:
         publisher = pubsub_v1.PublisherClient()
         project_id = os.environ.get("GCP_PROJECT", "trading-analytics-2025")
@@ -286,18 +246,16 @@ def publish_test_message(topic_name: str, alert_data: dict):
         future = publisher.publish(topic_path, message_data)
         return future.result()
     except Exception as e:
-        logger.error(f"Failed to publish message: {e}")
+        logger.error(f"Failed to publish test message to {topic_name}: {e}")
         return None
 
-# Routes
-@app.route("/health", methods=["GET"])
+# --- Flask Routes ---
+@app.route("/health")
 def health_check():
-    """Health check endpoint"""
     return jsonify({"status": "healthy", "service": "secret-alerts-dispatcher"})
 
-@app.route("/", methods=["GET"])
+@app.route("/")
 def root():
-    """Root endpoint"""
     config = config_manager.get_webhook_config()
     return jsonify({
         "service": "Secret Alerts Dispatcher",
@@ -305,66 +263,37 @@ def root():
         "environment": config.get("environment", "unknown")
     })
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    """Webhook for receiving alerts"""
-    try:
-        data = request.get_json()
-        if not data: return jsonify({"status": "error", "message": "No JSON"}), 400
-        processed_alert = alert_processor.parse_minimal_alert(data)
-        enriched_alert = alert_processor.enrich_alert_data(processed_alert)
-        results = notification_sender.send_notifications(enriched_alert)
-        return jsonify({"status": "success", "results": results}), 200
-    except Exception as e:
-        logger.error(f"Webhook failed: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
-
 @app.route("/pubsub", methods=["POST"])
 def pubsub_handler():
-    """Handle Pub/Sub messages"""
-    request_start_time = time.time()
+    """Handle incoming Pub/Sub messages"""
+    start_time = time.time()
     logger.info("Pub/Sub handler started.")
     try:
         envelope = request.get_json()
         if not envelope or "message" not in envelope:
-            return jsonify({"status": "error", "message": "Invalid Pub/Sub message"}), 400
+            return jsonify({"status": "error", "message": "Invalid Pub/Sub message format"}), 400
 
-        message_data = envelope["message"].get("data")
-        if not message_data:
-            return jsonify({"status": "error", "message": "No data in message"}), 400
+        message = envelope["message"]
+        if "data" not in message:
+            return jsonify({"status": "error", "message": "No data in Pub/Sub message"}), 400
 
-        decoded_data = base64.b64decode(message_data).decode("utf-8")
+        decoded_data = base64.b64decode(message["data"]).decode("utf-8")
         alert_data = json.loads(decoded_data)
-        logger.info(f"Message decoded successfully: {alert_data.get('symbol')}")
-
+        
         processed_alert = alert_processor.parse_minimal_alert(alert_data)
         enriched_alert = alert_processor.enrich_alert_data(processed_alert)
         results = notification_sender.send_notifications(enriched_alert)
         
-        duration = time.time() - request_start_time
-        logger.info(f"Pub/Sub handler finished in {duration:.2f}s.")
+        duration = time.time() - start_time
+        logger.info(f"Pub/Sub handler finished successfully in {duration:.2f}s.")
         return jsonify({"status": "success", "results": results}), 200
-    except Exception as e:
-        duration = time.time() - request_start_time
-        logger.error(f"Pub/Sub handler error after {duration:.2f}s: {e}", exc_info=True)
-        return jsonify({"status": "error", "message": str(e)}), 500
 
-@app.route("/test_pubsub", methods=["POST"])
-def test_pubsub():
-    """Test Pub/Sub publishing"""
-    try:
-        data = request.get_json() or {}
-        alert_data = {"symbol": data.get("symbol", "TEST"), "alert_type": "new_breaker", "trigger_time": "10:00:00"}
-        topic_name = data.get("topic", "circuit-breaker-alerts")
-        message_id = publish_test_message(topic_name, alert_data)
-        if message_id:
-            return jsonify({"status": "success", "message_id": message_id}), 200
-        else:
-            return jsonify({"status": "error", "message": "Failed to publish"}), 500
     except Exception as e:
-        logger.error(f"Test Pub/Sub failed: {e}")
+        duration = time.time() - start_time
+        logger.error(f"Pub/Sub handler failed after {duration:.2f}s: {e}", exc_info=True)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
+    # Use Gunicorn for production via Dockerfile CMD
     app.run(host="0.0.0.0", port=port, debug=False)
