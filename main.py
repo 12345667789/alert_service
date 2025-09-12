@@ -512,13 +512,18 @@ def webhook():
 @app.route("/pubsub", methods=["POST"])
 def pubsub_handler():
     """Handle Pub/Sub messages from monitoring program"""
+    request_start_time = time.time()
+    logger.info("Pub/Sub handler started.")
+    
     try:
         envelope = request.get_json()
         if not envelope:
+            logger.warning("Request received with no JSON envelope.")
             return jsonify({"status": "error", "message": "No Pub/Sub message"}), 400
 
         pubsub_message = envelope.get("message")
         if not pubsub_message:
+            logger.warning("Pub/Sub envelope received with no 'message' key.")
             return (
                 jsonify({"status": "error", "message": "No message in envelope"}),
                 400,
@@ -527,18 +532,24 @@ def pubsub_handler():
         # Decode the message data
         message_data = pubsub_message.get("data")
         if message_data:
+            logger.info("Decoding message data...")
             decoded_data = base64.b64decode(message_data).decode("utf-8")
             alert_data = json.loads(decoded_data)
-
-            logger.info(f"Received Pub/Sub message: {alert_data}")
+            logger.info(f"Message decoded successfully: {alert_data.get('symbol')}")
 
             # Process the alert data
+            logger.info("Processing alert...")
             processed_alert = alert_processor.parse_minimal_alert(alert_data)
             enriched_alert = alert_processor.enrich_alert_data(processed_alert)
+            logger.info("Alert processing complete.")
 
             # Send notifications
+            logger.info("Attempting to send notifications...")
             results = notification_sender.send_notifications(enriched_alert)
+            logger.info("Notification sending complete.")
 
+            request_duration = time.time() - request_start_time
+            logger.info(f"Pub/Sub handler finished successfully in {request_duration:.2f}s.")
             return (
                 jsonify(
                     {
@@ -550,10 +561,12 @@ def pubsub_handler():
                 200,
             )
         else:
+            logger.warning("Pub/Sub message received with no 'data' key.")
             return jsonify({"status": "error", "message": "No data in message"}), 400
 
     except Exception as e:
-        logger.error(f"Pub/Sub handler error: {e}")
+        request_duration = time.time() - request_start_time
+        logger.error(f"Pub/Sub handler error after {request_duration:.2f}s: {e}", exc_info=True)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
